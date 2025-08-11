@@ -51,10 +51,10 @@ app.get("/", (_req, res) => {
    - shop+host (non embedded) => top-level redirect vers /app/grant
 ----------------------------------------------------- */
 app.get("/app", (req, res) => {
-  const { shop, host, embedded } = req.query;
+  const { shop, host, hmac, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
 
-  // Récupère le slug depuis host (base64) sinon fallback shop
+  // Récupération du slug depuis host (b64) ou fallback shop
   const slugFromHost = host ? (() => {
     try {
       const decoded = Buffer.from(String(host), "base64").toString("utf8");
@@ -62,12 +62,26 @@ app.get("/app", (req, res) => {
       const u = new URL(url);
       const parts = u.pathname.split("/").filter(Boolean);
       const i = parts.indexOf("store");
-      return (i >= 0 && parts[i + 1]) ? parts[i + 1] : null;
+      return (i >= 0 && parts[i+1]) ? parts[i+1] : null;
     } catch { return null; }
   })() : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // 1) Déjà embarqué (iframe) → on REND la page (PAS de redirect vers admin)
+  // Cas A — INSTALL IMMÉDIATE (vérif auto) : /app/grant attendu
+  if (slug && shop && host && hmac) {
+    return res.redirect(
+      `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`
+    );
+  }
+
+  // Cas B — APRÈS AUTH (audit “App homepage after installation”) : HOMEPAGE attendue (pas /app/grant)
+  if (slug && shop && host && embedded !== "1") {
+    return res.redirect(
+      `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`
+    );
+  }
+
+  // Cas C — DÉJÀ EMBARQUÉ (iframe) : on REND la page (surtout pas de redirect vers admin)
   if (embedded === "1") {
     return res.type("html").send(`
 <!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
@@ -78,21 +92,9 @@ app.get("/app", (req, res) => {
 </body></html>`);
   }
 
-  // 2) Non embarqué mais on a shop+host → TOP-LEVEL redirect côté navigateur (JS)
-  //    => l’audit verra la HOMEPAGE (/apps/<handle>) et non /app/grant
-  if (slug && shop && host) {
-    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`;
-    return res.type("html").send(`
-<!doctype html><html><head><meta charset="utf-8"><title>Redirecting…</title>
-<meta http-equiv="refresh" content="0; url=${target}">
-<script>window.top.location.href=${JSON.stringify(target)};</script>
-</head><body>Redirecting…</body></html>`);
-  }
-
-  // 3) Fallback
+  // Fallback
   res.status(200).send("ZandoExpress App is installed ✔");
 });
-
 
 
 /* -------------- OAuth callback -----------
@@ -102,34 +104,45 @@ app.get("/auth/callback", async (req, res) => {
   try {
     const { shop, code, hmac, host } = req.query;
     if (!shop || !code || !hmac) return res.status(400).send("Missing required OAuth params");
-    if (!verifyHmac(req.query)) return res.status(401).send("HMAC invalid");
 
+    // Vérif HMAC (tri alpha, hmac retiré)
+    const { hmac: _h, ...rest } = req.query;
+    const sorted = Object.keys(rest).sort().map(k => `${k}=${rest[k]}`).join("&");
+    const good = crypto.createHmac("sha256", process.env.SHOPIFY_API_SECRET).update(sorted).digest("hex");
+    if (good !== hmac) return res.status(401).send("HMAC invalid");
+
+    // Échange code -> access_token
     const tokenResp = await axios.post(
       `https://${shop}/admin/oauth/access_token`,
-      {
-        client_id: process.env.SHOPIFY_API_KEY,
-        client_secret: process.env.SHOPIFY_API_SECRET,
-        code
-      },
+      { client_id: process.env.SHOPIFY_API_KEY, client_secret: process.env.SHOPIFY_API_SECRET, code },
       { headers: { "Content-Type": "application/json" } }
     );
     const access_token = tokenResp.data?.access_token;
     if (!access_token) return res.status(500).send("Failed to obtain access_token");
 
-    // (Optionnel) envoyer shop + token à Make/Airtable ici.
-
-    // Après OAuth -> ouvre l'app dans l'Admin (l'Admin se chargera d'embarquer ensuite)
+    // Redirection attendue après auth : HOMEPAGE de l’app (embed)
     const handle = process.env.APP_HANDLE || "zandoexpress";
-    const slugFromHost = host ? storeFromHost(host) : null;
-    const slug = slugFromHost || String(shop).replace(".myshopify.com", "");
-    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`;
-    return res.redirect(target);
+    const slugFromHost = host ? (() => {
+      try {
+        const decoded = Buffer.from(String(host), "base64").toString("utf8");
+        const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
+        const u = new URL(url);
+        const parts = u.pathname.split("/").filter(Boolean);
+        const i = parts.indexOf("store");
+        return (i >= 0 && parts[i+1]) ? parts[i+1] : null;
+      } catch { return null; }
+    })() : null;
+    const slug = slugFromHost || String(shop).replace(".myshopify.com","");
+
+    return res.redirect(
+      `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`
+    );
   } catch (err) {
-    const out = err?.response?.data || err?.message || "OAuth error";
-    console.error("OAuth callback error:", out);
+    console.error("OAuth callback error:", err?.response?.data || err?.message || err);
     return res.status(500).send("OAuth error");
   }
 });
+
 
 /* --------- Webhooks de conformité + HMAC --------- */
 app.use("/webhooks", bodyParser.raw({ type: "*/*" }));
