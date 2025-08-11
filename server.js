@@ -51,48 +51,41 @@ app.get("/", (_req, res) => {
    - shop+host (non embedded) => top-level redirect vers /app/grant
 ----------------------------------------------------- */
 app.get("/app", (req, res) => {
-  const { shop, host, embedded } = req.query;
+  const { shop, host, hmac, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
 
-  // Slug depuis host (base64) sinon fallback avec shop
+  // Slug
   const slugFromHost = host ? storeFromHost(host) : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // 1) PAS encore embarqué (pas embedded=1) ET on a shop+host => on demande le top-level grant
-  //    (c'est nécessaire pour que Shopify pose ses cookies, puis il reviendra avec embedded=1)
-  if (slug && shop && host && embedded !== "1") {
+  // 1) INSTALL IMMÉDIATE (vérif auto d'installation) -> /app/grant
+  if (slug && shop && host && hmac) {
     const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     return res.redirect(target);
   }
 
-  // 2) DÉJÀ embarqué (embedded=1) => on REND la page (NE PAS rediriger vers admin.shopify.com)
-  if (embedded === "1") {
-    return res.type("html").send(`
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>ZandoExpress</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-  </head>
-  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
-    <h1>ZandoExpress</h1>
-    <p>Bienvenue dans l'application embarquée dans l'Admin Shopify.</p>
-    <p>(Vous pourrez intégrer ici votre UI réelle, App Bridge, liens Softr, etc.)</p>
-  </body>
-</html>
-    `);
-  }
-
-  // 3) Cas normal (on a shop, éventuellement sans host) => aller sur la HOMEPAGE de l’app (ce que l’audit attend)
-  if (slug && shop) {
-    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`;
+  // 2) APRÈS AUTH (cas du check "App homepage after installation"):
+  // Shopify appelle /app avec shop+host (sans embedded=1). Il attend la HOMEPAGE, PAS /app/grant.
+  if (slug && shop && host && embedded !== "1") {
+    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`;
     return res.redirect(target);
   }
 
-  // 4) Fallback si /app sans paramètres
+  // 3) DÉJÀ EMBARQUÉ (iframe) -> on REND la page (surtout pas de redirection vers admin)
+  if (embedded === "1") {
+    return res.type("html").send(`
+<!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
+<h1>ZandoExpress</h1>
+<p>Bienvenue dans l'application embarquée dans l'Admin Shopify.</p>
+</body></html>`);
+  }
+
+  // 4) Fallback
   res.status(200).send("ZandoExpress App is installed ✔");
 });
+
 
 /* -------------- OAuth callback -----------
    Après échange du code, on renvoie l’admin ouvrir l’UI de l’app.
