@@ -1,3 +1,10 @@
+import express from "express";
+import axios from "axios";
+import crypto from "crypto";
+import "dotenv/config";
+
+const app = express();
+
 import bodyParser from "body-parser";
 app.use(bodyParser.raw({ type: "*/*" })); // pour calculer l'HMAC sur le raw body
 
@@ -31,13 +38,6 @@ app.post("/webhooks/shop/redact", verifyWebhookHmac, (req, res) => {
   res.sendStatus(200);
 });
 
-
-import express from "express";
-import axios from "axios";
-import crypto from "crypto";
-import "dotenv/config";
-
-const app = express();
 
 // Health check
 app.get("/", (_req, res) => {
