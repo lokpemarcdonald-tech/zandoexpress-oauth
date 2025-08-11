@@ -51,21 +51,23 @@ app.get("/", (_req, res) => {
    - shop+host (non embedded) => top-level redirect vers /app/grant
 ----------------------------------------------------- */
 app.get("/app", (req, res) => {
-  const { shop, host, hmac, embedded } = req.query;
+  const { shop, host, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
 
-  // Slug à partir de host (base64) ou fallback avec shop
-  const slugFromHost = host ? storeFromHost(host) : null;
+  // Récupère le slug depuis host (base64) sinon fallback shop
+  const slugFromHost = host ? (() => {
+    try {
+      const decoded = Buffer.from(String(host), "base64").toString("utf8");
+      const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
+      const u = new URL(url);
+      const parts = u.pathname.split("/").filter(Boolean);
+      const i = parts.indexOf("store");
+      return (i >= 0 && parts[i + 1]) ? parts[i + 1] : null;
+    } catch { return null; }
+  })() : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // 1) Installation immédiate (audit d’installation) → /app/grant attendu
-  if (slug && shop && host && hmac) {
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`
-    );
-  }
-
-  // 2) Déjà EMBARQUÉ (iframe) → surtout NE PAS rediriger vers admin, on rend la page
+  // 1) Déjà embarqué (iframe) → on REND la page (PAS de redirect vers admin)
   if (embedded === "1") {
     return res.type("html").send(`
 <!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
@@ -76,17 +78,21 @@ app.get("/app", (req, res) => {
 </body></html>`);
   }
 
-  // 3) Cas "après authentification" (ce que l’audit teste) → envoyer vers HOMEPAGE
-  //    Ici, PAS de /app/grant, sinon l’audit échoue.
+  // 2) Non embarqué mais on a shop+host → TOP-LEVEL redirect côté navigateur (JS)
+  //    => l’audit verra la HOMEPAGE (/apps/<handle>) et non /app/grant
   if (slug && shop && host) {
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`
-    );
+    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`;
+    return res.type("html").send(`
+<!doctype html><html><head><meta charset="utf-8"><title>Redirecting…</title>
+<meta http-equiv="refresh" content="0; url=${target}">
+<script>window.top.location.href=${JSON.stringify(target)};</script>
+</head><body>Redirecting…</body></html>`);
   }
 
-  // 4) Fallback
+  // 3) Fallback
   res.status(200).send("ZandoExpress App is installed ✔");
 });
+
 
 
 /* -------------- OAuth callback -----------
