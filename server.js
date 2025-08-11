@@ -5,43 +5,65 @@ import "dotenv/config";
 
 const app = express();
 
-// Health & landing
+// Health check
 app.get("/", (_req, res) => {
   res.status(200).send("ZandoExpress OAuth backend is running ✔");
 });
 
-// App URL (set this in Shopify 'App URL')
-app.get("/app", (_req, res) => {
+/**
+ * /app — URL d'application (Shopify > App URL)
+ * Shopify veut voir /app/grant. Si on reçoit ?shop=... (et éventuellement ?host=...),
+ * on redirige vers /app/grant immédiatement.
+ */
+app.get("/app", (req, res) => {
+  const { shop, host } = req.query;
+  if (shop) {
+    const storeSlug = String(shop).replace(".myshopify.com", "");
+    const target = `https://admin.shopify.com/store/${storeSlug}/app/grant?shop=${encodeURIComponent(
+      shop
+    )}${host ? `&host=${encodeURIComponent(host)}` : ""}`;
+    return res.redirect(target);
+  }
+  // Fallback si /app est appelé sans paramètre
   res.status(200).send("ZandoExpress App is installed ✔");
 });
 
-// Helper to extract store slug from 'host' (base64-encoded 'admin.shopify.com/store/<slug>')
-function storeFromHost(hostB64) {
-  try {
-    const decoded = Buffer.from(hostB64, "base64").toString("utf8");
-    const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
-    const u = new URL(url);
-    const parts = u.pathname.split("/").filter(Boolean);
-    const idx = parts.indexOf("store");
-    if (idx !== -1 && parts[idx + 1]) return parts[idx + 1];
-  } catch (e) {}
-  return null;
+/**
+ * Vérification HMAC selon la doc Shopify :
+ * - enlever hmac
+ * - trier les clés ascendantes
+ * - concaténer sous forme "k=v&k2=v2..."
+ * - HMAC SHA256 avec SHOPIFY_API_SECRET
+ */
+function verifyHmac(query) {
+  const { hmac, ...rest } = query;
+  const sorted = Object.keys(rest)
+    .sort()
+    .map((key) => `${key}=${rest[key]}`)
+    .join("&");
+
+  const digest = crypto
+    .createHmac("sha256", process.env.SHOPIFY_API_SECRET)
+    .update(sorted)
+    .digest("hex");
+
+  return digest === hmac;
 }
 
-// OAuth callback (set this in Shopify 'Allowed redirection URL(s)')
+/**
+ * /auth/callback — URL de redirection OAuth (Shopify > Allowed redirection URL(s))
+ * Reçoit shop + code + hmac, vérifie HMAC, échange le code contre access_token,
+ * puis redirige vers /app/grant (URL attendue par la vérification Shopify).
+ */
 app.get("/auth/callback", async (req, res) => {
   try {
     const { shop, code, hmac, host } = req.query;
     if (!shop || !code || !hmac) return res.status(400).send("Missing required OAuth params");
 
-    // Verify HMAC
-    const params = { ...req.query };
-    delete params.hmac;
-    const message = new URLSearchParams(params).toString();
-    const computed = crypto.createHmac("sha256", process.env.SHOPIFY_API_SECRET).update(message).digest("hex");
-    if (computed !== hmac) return res.status(401).send("HMAC invalid");
+    // 1) Vérif HMAC
+    if (!verifyHmac(req.query)) return res.status(401).send("HMAC invalid");
 
-    // Exchange code -> access_token
+    // 2) Échange code -> access_token
     const tokenUrl = `https://${shop}/admin/oauth/access_token`;
     const tokenResp = await axios.post(
       tokenUrl,
@@ -56,19 +78,15 @@ app.get("/auth/callback", async (req, res) => {
     const access_token = tokenResp.data?.access_token;
     if (!access_token) return res.status(500).send("Failed to obtain access_token");
 
-    // TODO: store shop + token in DB/Airtable if you want
+    // (Optionnel) Envoyer shop + token vers Make/Airtable ici
+    // await axios.post("https://hook.us2.make.com/TON_WEBHOOK_MAKE", { shop, access_token });
 
-    // ---- IMPORTANT : redirection vers /app/grant (ce que Shopify attend)
-    let storeSlug = (host && storeFromHost(host)) || shop.replace(".myshopify.com", "");
-    // Si host existe, on le repasse à Shopify
-    if (host) {
-      const target = `https://admin.shopify.com/store/${storeSlug}/app/grant?shop=${encodeURIComponent(
-        shop
-      )}&host=${encodeURIComponent(host)}`;
-      return res.redirect(target);
-    }
-    // Fallback sans host (rare)
-    return res.redirect(`https://admin.shopify.com/store/${storeSlug}/app/grant?shop=${encodeURIComponent(shop)}`);
+    // 3) Redirection attendue par Shopify : /app/grant
+    const storeSlug = String(shop).replace(".myshopify.com", "");
+    const target = `https://admin.shopify.com/store/${storeSlug}/app/grant?shop=${encodeURIComponent(
+      shop
+    )}${host ? `&host=${encodeURIComponent(host)}` : ""}`;
+    return res.redirect(target);
   } catch (err) {
     const out = err?.response?.data || err?.message || "OAuth error";
     console.error("OAuth callback error:", out);
