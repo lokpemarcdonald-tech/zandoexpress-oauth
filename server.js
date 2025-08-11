@@ -1,3 +1,37 @@
+import bodyParser from "body-parser";
+app.use(bodyParser.raw({ type: "*/*" })); // pour calculer l'HMAC sur le raw body
+
+function verifyWebhookHmac(req, res, next) {
+  try {
+    const hmacHeader = req.get("X-Shopify-Hmac-Sha256");
+    const digest = crypto
+      .createHmac("sha256", process.env.SHOPIFY_API_SECRET)
+      .update(req.body) // raw body
+      .digest("base64");
+    if (digest !== hmacHeader) return res.status(401).send("Invalid webhook HMAC");
+    next();
+  } catch (e) {
+    return res.status(401).send("Invalid webhook");
+  }
+}
+
+// Conformité RGPD/CCPA – webhooks obligatoires
+app.post("/webhooks/customers/data_request", verifyWebhookHmac, (req, res) => {
+  // TODO: si tu stockes des données client, renvoyer ou consigner la demande
+  res.sendStatus(200);
+});
+
+app.post("/webhooks/customers/redact", verifyWebhookHmac, (req, res) => {
+  // TODO: supprimer/anon les données client si stockées
+  res.sendStatus(200);
+});
+
+app.post("/webhooks/shop/redact", verifyWebhookHmac, (req, res) => {
+  // TODO: supprimer/anon toutes les données de la boutique à la désinstallation / sur demande
+  res.sendStatus(200);
+});
+
+
 import express from "express";
 import axios from "axios";
 import crypto from "crypto";
