@@ -51,25 +51,21 @@ app.get("/", (_req, res) => {
    - shop+host (non embedded) => top-level redirect vers /app/grant
 ----------------------------------------------------- */
 app.get("/app", (req, res) => {
-  const { shop, host, hmac, embedded } = req.query;
+  const { shop, host, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
+
+  // Slug depuis host (base64) sinon fallback avec shop
   const slugFromHost = host ? storeFromHost(host) : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // 1) Vérification d'installation automatisée => /app/grant attendu
-  if (slug && shop && host && hmac) {
-    const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
-    return res.redirect(target);
-  }
-
-  // 2) Si pas encore embarqué (pas embedded=1) mais on a shop+host => top-level redirect vers /app/grant
-  //    L’admin reviendra ensuite charger /app?embedded=1 (iframe) automatiquement.
+  // 1) PAS encore embarqué (pas embedded=1) ET on a shop+host => on demande le top-level grant
+  //    (c'est nécessaire pour que Shopify pose ses cookies, puis il reviendra avec embedded=1)
   if (slug && shop && host && embedded !== "1") {
     const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     return res.redirect(target);
   }
 
-  // 3) Déjà embarqué (embedded=1) => RENDRE la page (pas de redirection vers admin.shopify.com)
+  // 2) DÉJÀ embarqué (embedded=1) => on REND la page (NE PAS rediriger vers admin.shopify.com)
   if (embedded === "1") {
     return res.type("html").send(`
 <!doctype html>
@@ -88,7 +84,13 @@ app.get("/app", (req, res) => {
     `);
   }
 
-  // 4) Fallback : si /app sans paramètres connus
+  // 3) Cas normal (on a shop, éventuellement sans host) => aller sur la HOMEPAGE de l’app (ce que l’audit attend)
+  if (slug && shop) {
+    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`;
+    return res.redirect(target);
+  }
+
+  // 4) Fallback si /app sans paramètres
   res.status(200).send("ZandoExpress App is installed ✔");
 });
 
