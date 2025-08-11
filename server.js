@@ -40,27 +40,42 @@ function verifyHmac(query) {
 
 /* ---------- App UI ---------- */
 app.get("/app", (req, res) => {
-  const { shop, host, hmac } = req.query;
+  const { shop, host, hmac, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
+
+  // Récupère le slug du store
   const slugFromHost = host ? storeFromHost(host) : null;
-  const slug = slugFromHost || (shop ? shop.replace(".myshopify.com", "") : null);
+  const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // CAS : Test d’installation automatisé de Shopify
-  if (slug && shop && host && hmac && req.query.test_install === "1") {
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`
-    );
+  // 1) Vérif automatisée d'installation → Shopify attend /app/grant
+  if (slug && shop && host && hmac) {
+    const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+    return res.redirect(target);
   }
 
-  // CAS normal (ouvrir l'app depuis Admin)
+  // 2) Si l'app n'est pas encore embarquée (pas embedded=1) mais qu'on a shop+host,
+  // on force un top-level redirect pour que Shopify donne les cookies, puis l'admin relancera en embed.
+  if (slug && shop && host && embedded !== "1") {
+    const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+    return res.redirect(target);
+  }
+
+  // 3) Cas normal (déjà en iframe) → aller sur la page d'accueil embed de l'app
   if (slug && shop) {
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`
-    );
+    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`;
+    return res.redirect(target);
   }
 
-  res.send("ZandoExpress App is installed ✔");
+  // 4) Fallback : petite page statique (utile si /app sans query)
+  res.type("html").send(`
+<!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
+<h1>ZandoExpress</h1>
+<p>Votre application est installée et s’affiche dans l’Admin Shopify.</p>
+</body></html>`);
 });
+
 
 /* ---------- OAuth callback ---------- */
 app.get("/auth/callback", async (req, res) => {
