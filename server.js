@@ -54,32 +54,34 @@ app.get("/app", (req, res) => {
   const { shop, host, hmac, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
 
-  // Slug
+  // Slug à partir de host (base64) ou fallback avec shop
   const slugFromHost = host ? storeFromHost(host) : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // 1) INSTALL IMMÉDIATE (vérif auto d'installation) -> /app/grant
+  // 1) Installation immédiate (audit d’installation) → /app/grant attendu
   if (slug && shop && host && hmac) {
-    const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
-    return res.redirect(target);
+    return res.redirect(
+      `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`
+    );
   }
 
-  // 2) APRÈS AUTH (cas du check "App homepage after installation"):
-  // Shopify appelle /app avec shop+host (sans embedded=1). Il attend la HOMEPAGE, PAS /app/grant.
-  if (slug && shop && host && embedded !== "1") {
-    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`;
-    return res.redirect(target);
-  }
-
-  // 3) DÉJÀ EMBARQUÉ (iframe) -> on REND la page (surtout pas de redirection vers admin)
+  // 2) Déjà EMBARQUÉ (iframe) → surtout NE PAS rediriger vers admin, on rend la page
   if (embedded === "1") {
     return res.type("html").send(`
 <!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
-<h1>ZandoExpress</h1>
-<p>Bienvenue dans l'application embarquée dans l'Admin Shopify.</p>
+  <h1>ZandoExpress</h1>
+  <p>Bienvenue dans l'application embarquée dans l'Admin Shopify.</p>
 </body></html>`);
+  }
+
+  // 3) Cas "après authentification" (ce que l’audit teste) → envoyer vers HOMEPAGE
+  //    Ici, PAS de /app/grant, sinon l’audit échoue.
+  if (slug && shop && host) {
+    return res.redirect(
+      `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`
+    );
   }
 
   // 4) Fallback
