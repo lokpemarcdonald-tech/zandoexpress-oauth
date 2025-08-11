@@ -54,24 +54,40 @@ function verifyHmac(query) {
 /* ---------------- App URL ----------------
    Page d’accueil EMBED (servie en iframe dans l’admin)
 ------------------------------------------ */
-app.get("/app", (_req, res) => {
-  // Petite page HTML ; tu pourras brancher App Bridge ici plus tard
+app.get("/app", (req, res) => {
+  const { shop, host, hmac } = req.query;
+  const handle = process.env.APP_HANDLE || "zandoexpress";
+
+  // Récupère le slug du store depuis host (base64) sinon fallback avec shop
+  const slugFromHost = host ? storeFromHost(host) : null;
+  const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
+
+  // ✅ CAS INSTALL IMMÉDIATE (vérification automatisée)
+  // Shopify passe sur /app avec shop+host+hmac -> on DOIT rediriger vers /app/grant
+  if (slug && shop && host && hmac) {
+    const target =
+      `https://admin.shopify.com/store/${slug}/app/grant` +
+      `?shop=${encodeURIComponent(String(shop))}&host=${encodeURIComponent(String(host))}`;
+    return res.redirect(target);
+  }
+
+  // ✅ CAS NORMAL (après auth / quand on ouvre l'app depuis l'Admin)
+  if (slug && shop) {
+    const target =
+      `https://admin.shopify.com/store/${slug}/apps/${handle}` +
+      (host ? `?host=${encodeURIComponent(String(host))}` : "");
+    return res.redirect(target);
+  }
+
+  // Fallback si /app sans paramètres
   res.type("html").send(`
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>ZandoExpress</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-  </head>
-  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
-    <h1>ZandoExpress</h1>
-    <p>Votre application est installée et s’affiche bien dans l’Admin Shopify.</p>
-    <p>(Plus tard : ajoutez votre UI, tableaux, liens vers Softr, etc.)</p>
-  </body>
-</html>
-  `);
+<!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
+<h1>ZandoExpress</h1><p>Votre application est installée et s’affiche dans l’Admin Shopify.</p>
+</body></html>`);
 });
+
 
 /* -------------- OAuth callback -----------
    Reçoit shop+code+hmac, vérifie HMAC, échange le code,
