@@ -6,26 +6,38 @@ import "dotenv/config";
 
 const app = express();
 
+/* ---------- Autoriser l’embed dans l’Admin Shopify ---------- */
+app.use((req, res, next) => {
+  // Autorise l’affichage en iframe par Shopify Admin
+  res.setHeader(
+    "Content-Security-Policy",
+    "frame-ancestors https://admin.shopify.com https://*.myshopify.com;"
+  );
+  // On supprime X-Frame-Options si présent pour éviter DENY
+  res.removeHeader("X-Frame-Options");
+  next();
+});
+
 /* ---------------- Health ---------------- */
 app.get("/", (_req, res) => {
   res.status(200).send("ZandoExpress OAuth backend is running ✔");
 });
 
-/* ------------- Utils / helpers ---------- */
-// Extrait le slug du store (ex: uvszh1-m5) à partir de `host` encodé b64
+/* ------------- Helpers ---------- */
+// Récupère le slug du store (ex: uvszh1-m5) depuis `host` encodé en base64
 function storeFromHost(hostB64) {
   try {
     const decoded = Buffer.from(String(hostB64), "base64").toString("utf8");
     const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
     const u = new URL(url);
-    const parts = u.pathname.split("/").filter(Boolean); // ["store", "<slug>"]
+    const parts = u.pathname.split("/").filter(Boolean); // ["store","<slug>"]
     const i = parts.indexOf("store");
     if (i >= 0 && parts[i + 1]) return parts[i + 1];
   } catch (_) {}
   return null;
 }
 
-// Vérif HMAC (OAuth query)
+// Vérif HMAC pour les paramètres OAuth
 function verifyHmac(query) {
   const { hmac, ...rest } = query;
   const sorted = Object.keys(rest)
@@ -40,54 +52,30 @@ function verifyHmac(query) {
 }
 
 /* ---------------- App URL ----------------
-   Après l’install, Shopify veut l’UI de l’app :
-   https://admin.shopify.com/store/<slug>/apps/<APP_HANDLE>
+   Page d’accueil EMBED (servie en iframe dans l’admin)
 ------------------------------------------ */
-app.get("/app", (req, res) => {
-  const { shop, host } = req.query;
-  const handle = process.env.APP_HANDLE || "zandoexpress";
-
-  // slug de store
-  const slugFromHost = host
-    ? (()=>{
-        try{
-          const decoded = Buffer.from(String(host), "base64").toString("utf8");
-          const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
-          const u = new URL(url);
-          const parts = u.pathname.split("/").filter(Boolean);
-          const i = parts.indexOf("store");
-          return (i >= 0 && parts[i+1]) ? parts[i+1] : null;
-        } catch { return null; }
-      })()
-    : null;
-
-  const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
-
-  // 1) Cas INSTALL IMMÉDIAT : Shopify attend /app/grant
-  // -> on déclenche si on a bien les deux paramètres (shop & host) fournis par Shopify
-  if (slug && shop && host) {
-    const target =
-      `https://admin.shopify.com/store/${slug}/app/grant` +
-      `?shop=${encodeURIComponent(String(shop))}&host=${encodeURIComponent(String(host))}`;
-    return res.redirect(target);
-  }
-
-  // 2) Cas post-auth / UI : envoyer vers la page de l'app
-  if (slug && shop) {
-    const target =
-      `https://admin.shopify.com/store/${slug}/apps/${handle}` +
-      (host ? `?host=${encodeURIComponent(String(host))}` : "");
-    return res.redirect(target);
-  }
-
-  // Fallback
-  res.status(200).send("ZandoExpress App is installed ✔");
+app.get("/app", (_req, res) => {
+  // Petite page HTML ; tu pourras brancher App Bridge ici plus tard
+  res.type("html").send(`
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ZandoExpress</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+  </head>
+  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
+    <h1>ZandoExpress</h1>
+    <p>Votre application est installée et s’affiche bien dans l’Admin Shopify.</p>
+    <p>(Plus tard : ajoutez votre UI, tableaux, liens vers Softr, etc.)</p>
+  </body>
+</html>
+  `);
 });
-
 
 /* -------------- OAuth callback -----------
    Reçoit shop+code+hmac, vérifie HMAC, échange le code,
-   puis redirige vers /app/grant (attendu par la vérification).
+   puis REDIRIGE vers la HOME de l’app (/apps/<handle>) comme demandé.
 ------------------------------------------ */
 app.get("/auth/callback", async (req, res) => {
   try {
@@ -109,16 +97,16 @@ app.get("/auth/callback", async (req, res) => {
     const access_token = tokenResp.data?.access_token;
     if (!access_token) return res.status(500).send("Failed to obtain access_token");
 
-    // TODO: envoyer shop + token vers Make/Airtable ici si besoin
+    // (Optionnel) Envoyer shop + token vers Make/Airtable
     // await axios.post("https://hook.us2.make.com/TON_WEBHOOK_MAKE", { shop, access_token });
 
-    // Redirection attendue par Shopify : /app/grant
+    // Après auth → aller directement sur la page d’accueil de l’app (embed)
+    const handle = process.env.APP_HANDLE || "zandoexpress";
     const slugFromHost = host ? storeFromHost(host) : null;
     const slug = slugFromHost || String(shop).replace(".myshopify.com", "");
     const target =
-      `https://admin.shopify.com/store/${slug}/app/grant` +
-      `?shop=${encodeURIComponent(String(shop))}` +
-      (host ? `&host=${encodeURIComponent(String(host))}` : "");
+      `https://admin.shopify.com/store/${slug}/apps/${handle}` +
+      (host ? `?host=${encodeURIComponent(String(host))}` : "");
     return res.redirect(target);
   } catch (err) {
     const out = err?.response?.data || err?.message || "OAuth error";
@@ -128,8 +116,7 @@ app.get("/auth/callback", async (req, res) => {
 });
 
 /* --------- Webhooks de conformité + HMAC ---------
-   On utilise bodyParser.raw UNIQUEMENT pour /webhooks
-   afin de calculer l’HMAC sur le RAW body.
+   RAW body seulement pour /webhooks afin de calculer l’HMAC.
 --------------------------------------------------- */
 app.use("/webhooks", bodyParser.raw({ type: "*/*" }));
 
