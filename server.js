@@ -46,18 +46,44 @@ function verifyHmac(query) {
 app.get("/app", (req, res) => {
   const { shop, host } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
-  const slugFromHost = host ? storeFromHost(host) : null;
+
+  // slug de store
+  const slugFromHost = host
+    ? (()=>{
+        try{
+          const decoded = Buffer.from(String(host), "base64").toString("utf8");
+          const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
+          const u = new URL(url);
+          const parts = u.pathname.split("/").filter(Boolean);
+          const i = parts.indexOf("store");
+          return (i >= 0 && parts[i+1]) ? parts[i+1] : null;
+        } catch { return null; }
+      })()
+    : null;
+
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
+  // 1) Cas INSTALL IMMÉDIAT : Shopify attend /app/grant
+  // -> on déclenche si on a bien les deux paramètres (shop & host) fournis par Shopify
+  if (slug && shop && host) {
+    const target =
+      `https://admin.shopify.com/store/${slug}/app/grant` +
+      `?shop=${encodeURIComponent(String(shop))}&host=${encodeURIComponent(String(host))}`;
+    return res.redirect(target);
+  }
+
+  // 2) Cas post-auth / UI : envoyer vers la page de l'app
   if (slug && shop) {
     const target =
       `https://admin.shopify.com/store/${slug}/apps/${handle}` +
       (host ? `?host=${encodeURIComponent(String(host))}` : "");
     return res.redirect(target);
   }
-  // Fallback si /app sans params
+
+  // Fallback
   res.status(200).send("ZandoExpress App is installed ✔");
 });
+
 
 /* -------------- OAuth callback -----------
    Reçoit shop+code+hmac, vérifie HMAC, échange le code,
