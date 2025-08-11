@@ -10,23 +10,26 @@ app.get("/", (_req, res) => {
   res.status(200).send("ZandoExpress OAuth backend is running ✔");
 });
 
-/**
- * /app — URL d'application (Shopify > App URL)
- * Shopify veut voir /app/grant. Si on reçoit ?shop=... (et éventuellement ?host=...),
- * on redirige vers /app/grant immédiatement.
- */
+// App URL (Shopify > App URL)
+// Après installation, Shopify veut atteindre la page de l'app,
+// donc on redirige vers /apps/<handle>.
 app.get("/app", (req, res) => {
   const { shop, host } = req.query;
-  if (shop) {
-    const storeSlug = String(shop).replace(".myshopify.com", "");
-    const target = `https://admin.shopify.com/store/${storeSlug}/app/grant?shop=${encodeURIComponent(
-      shop
-    )}${host ? `&host=${encodeURIComponent(host)}` : ""}`;
+  const handle = process.env.APP_HANDLE || "zandoexpress";
+  const storeSlug = shop ? String(shop).replace(".myshopify.com", "") : "";
+
+  // Si on a shop/host, on les passe pour un chargement propre de l’UI
+  if (storeSlug) {
+    const target = `https://admin.shopify.com/store/${storeSlug}/apps/${handle}${
+      host ? `?host=${encodeURIComponent(String(host))}` : ""
+    }`;
     return res.redirect(target);
   }
-  // Fallback si /app est appelé sans paramètre
+
+  // Fallback si appelé sans params
   res.status(200).send("ZandoExpress App is installed ✔");
 });
+
 
 /**
  * Vérification HMAC selon la doc Shopify :
