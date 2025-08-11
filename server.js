@@ -6,7 +6,7 @@ import "dotenv/config";
 
 const app = express();
 
-/* Autoriser l’embed dans Shopify Admin */
+/* ---------- Autoriser l’embed dans l’Admin Shopify ---------- */
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
@@ -16,12 +16,13 @@ app.use((req, res, next) => {
   next();
 });
 
+/* ---------------- Helpers ---------------- */
 function storeFromHost(hostB64) {
   try {
     const decoded = Buffer.from(String(hostB64), "base64").toString("utf8");
     const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
     const u = new URL(url);
-    const parts = u.pathname.split("/").filter(Boolean);
+    const parts = u.pathname.split("/").filter(Boolean); // ["store","<slug>"]
     const i = parts.indexOf("store");
     if (i >= 0 && parts[i + 1]) return parts[i + 1];
   } catch (_) {}
@@ -38,76 +39,96 @@ function verifyHmac(query) {
   return digest === hmac;
 }
 
-/* ---------- App UI ---------- */
+/* ---------------- Health ---------------- */
+app.get("/", (_req, res) => {
+  res.status(200).send("ZandoExpress OAuth backend is running ✔");
+});
+
+/* ---------------- App URL (UI embed) ----------------
+   IMPORTANT :
+   - embedded=1  => on REND la page (pas de redirection vers admin.shopify.com)
+   - shop+host+hmac => install auto => /app/grant
+   - shop+host (non embedded) => top-level redirect vers /app/grant
+----------------------------------------------------- */
 app.get("/app", (req, res) => {
   const { shop, host, hmac, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
-
-  // Récupère le slug du store
   const slugFromHost = host ? storeFromHost(host) : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // 1) Vérif automatisée d'installation → Shopify attend /app/grant
+  // 1) Vérification d'installation automatisée => /app/grant attendu
   if (slug && shop && host && hmac) {
     const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     return res.redirect(target);
   }
 
-  // 2) Si l'app n'est pas encore embarquée (pas embedded=1) mais qu'on a shop+host,
-  // on force un top-level redirect pour que Shopify donne les cookies, puis l'admin relancera en embed.
+  // 2) Si pas encore embarqué (pas embedded=1) mais on a shop+host => top-level redirect vers /app/grant
+  //    L’admin reviendra ensuite charger /app?embedded=1 (iframe) automatiquement.
   if (slug && shop && host && embedded !== "1") {
     const target = `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     return res.redirect(target);
   }
 
-  // 3) Cas normal (déjà en iframe) → aller sur la page d'accueil embed de l'app
-  if (slug && shop) {
-    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`;
-    return res.redirect(target);
+  // 3) Déjà embarqué (embedded=1) => RENDRE la page (pas de redirection vers admin.shopify.com)
+  if (embedded === "1") {
+    return res.type("html").send(`
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ZandoExpress</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+  </head>
+  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
+    <h1>ZandoExpress</h1>
+    <p>Bienvenue dans l'application embarquée dans l'Admin Shopify.</p>
+    <p>(Vous pourrez intégrer ici votre UI réelle, App Bridge, liens Softr, etc.)</p>
+  </body>
+</html>
+    `);
   }
 
-  // 4) Fallback : petite page statique (utile si /app sans query)
-  res.type("html").send(`
-<!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; padding:24px">
-<h1>ZandoExpress</h1>
-<p>Votre application est installée et s’affiche dans l’Admin Shopify.</p>
-</body></html>`);
+  // 4) Fallback : si /app sans paramètres connus
+  res.status(200).send("ZandoExpress App is installed ✔");
 });
 
-
-/* ---------- OAuth callback ---------- */
+/* -------------- OAuth callback -----------
+   Après échange du code, on renvoie l’admin ouvrir l’UI de l’app.
+------------------------------------------ */
 app.get("/auth/callback", async (req, res) => {
   try {
     const { shop, code, hmac, host } = req.query;
-    if (!shop || !code || !hmac) return res.status(400).send("Missing params");
+    if (!shop || !code || !hmac) return res.status(400).send("Missing required OAuth params");
     if (!verifyHmac(req.query)) return res.status(401).send("HMAC invalid");
 
-    const tokenResp = await axios.post(`https://${shop}/admin/oauth/access_token`, {
-      client_id: process.env.SHOPIFY_API_KEY,
-      client_secret: process.env.SHOPIFY_API_SECRET,
-      code
-    }, { headers: { "Content-Type": "application/json" } });
-
+    const tokenResp = await axios.post(
+      `https://${shop}/admin/oauth/access_token`,
+      {
+        client_id: process.env.SHOPIFY_API_KEY,
+        client_secret: process.env.SHOPIFY_API_SECRET,
+        code
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
     const access_token = tokenResp.data?.access_token;
-    if (!access_token) return res.status(500).send("No access token");
+    if (!access_token) return res.status(500).send("Failed to obtain access_token");
 
+    // (Optionnel) envoyer shop + token à Make/Airtable ici.
+
+    // Après OAuth -> ouvre l'app dans l'Admin (l'Admin se chargera d'embarquer ensuite)
     const handle = process.env.APP_HANDLE || "zandoexpress";
     const slugFromHost = host ? storeFromHost(host) : null;
-    const slug = slugFromHost || shop.replace(".myshopify.com", "");
-
-    // Après OAuth → Aller directement à l'UI embed
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`
-    );
+    const slug = slugFromHost || String(shop).replace(".myshopify.com", "");
+    const target = `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`;
+    return res.redirect(target);
   } catch (err) {
-    console.error("OAuth callback error:", err?.message);
+    const out = err?.response?.data || err?.message || "OAuth error";
+    console.error("OAuth callback error:", out);
     return res.status(500).send("OAuth error");
   }
 });
 
-/* ---------- Webhooks ---------- */
+/* --------- Webhooks de conformité + HMAC --------- */
 app.use("/webhooks", bodyParser.raw({ type: "*/*" }));
 
 function verifyWebhookHmac(req, res, next) {
@@ -128,6 +149,6 @@ app.post("/webhooks/customers/data_request", verifyWebhookHmac, (_req, res) => r
 app.post("/webhooks/customers/redact", verifyWebhookHmac, (_req, res) => res.sendStatus(200));
 app.post("/webhooks/shop/redact", verifyWebhookHmac, (_req, res) => res.sendStatus(200));
 
-/* ---------- Listen ---------- */
+/* ---------------- Listen ---------------- */
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`ZandoExpress OAuth listening on :${port}`));
