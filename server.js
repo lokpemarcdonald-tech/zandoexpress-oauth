@@ -54,7 +54,7 @@ app.get("/app", (req, res) => {
   const { shop, host, hmac, embedded } = req.query;
   const handle = process.env.APP_HANDLE || "zandoexpress";
 
-  // Récupération du slug depuis host (b64) ou fallback shop
+  // Helper: slug depuis host (base64) ou fallback avec shop
   const slugFromHost = host ? (() => {
     try {
       const decoded = Buffer.from(String(host), "base64").toString("utf8");
@@ -67,21 +67,7 @@ app.get("/app", (req, res) => {
   })() : null;
   const slug = slugFromHost || (shop ? String(shop).replace(".myshopify.com", "") : null);
 
-  // Cas A — INSTALL IMMÉDIATE (vérif auto) : /app/grant attendu
-  if (slug && shop && host && hmac) {
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`
-    );
-  }
-
-  // Cas B — APRÈS AUTH (audit “App homepage after installation”) : HOMEPAGE attendue (pas /app/grant)
-  if (slug && shop && host && embedded !== "1") {
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}`
-    );
-  }
-
-  // Cas C — DÉJÀ EMBARQUÉ (iframe) : on REND la page (surtout pas de redirect vers admin)
+  // 0) DÉJÀ EMBARQUÉ (iframe) => RENDRE la page (surtout PAS de redirect vers admin.shopify.com)
   if (embedded === "1") {
     return res.type("html").send(`
 <!doctype html><html><head><meta charset="utf-8"><title>ZandoExpress</title>
@@ -92,7 +78,26 @@ app.get("/app", (req, res) => {
 </body></html>`);
   }
 
-  // Fallback
+  // 1) INSTALL IMMÉDIATE (audit d’install) → /app/grant attendu
+  if (slug && shop && host && hmac) {
+    return res.redirect(
+      `https://admin.shopify.com/store/${slug}/app/grant?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`
+    );
+  }
+
+  // 2) APRÈS AUTH (audit “App homepage after installation”) → HOMEPAGE (PAS /app/grant)
+  //    On force un top-level vers la page d’apps. (Pas d’iframe ici.)
+  if (slug && shop && host) {
+    return res.type("html").send(`
+<!doctype html><html><head><meta charset="utf-8"><title>Redirecting…</title>
+<meta http-equiv="refresh" content="0; url=https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}">
+<script>
+  window.top.location.href = "https://admin.shopify.com/store/${slug}/apps/${handle}?host=${encodeURIComponent(host)}";
+</script>
+</head><body>Redirecting…</body></html>`);
+  }
+
+  // 3) Fallback
   res.status(200).send("ZandoExpress App is installed ✔");
 });
 
@@ -121,22 +126,24 @@ app.get("/auth/callback", async (req, res) => {
     if (!access_token) return res.status(500).send("Failed to obtain access_token");
 
     // Redirection attendue après auth : HOMEPAGE de l’app (embed)
-    const handle = process.env.APP_HANDLE || "zandoexpress";
-    const slugFromHost = host ? (() => {
-      try {
-        const decoded = Buffer.from(String(host), "base64").toString("utf8");
-        const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
-        const u = new URL(url);
-        const parts = u.pathname.split("/").filter(Boolean);
-        const i = parts.indexOf("store");
-        return (i >= 0 && parts[i+1]) ? parts[i+1] : null;
-      } catch { return null; }
-    })() : null;
-    const slug = slugFromHost || String(shop).replace(".myshopify.com","");
+    // … après avoir obtenu access_token
+const handle = process.env.APP_HANDLE || "zandoexpress";
+const slugFromHost = host ? (() => {
+  try {
+    const decoded = Buffer.from(String(host), "base64").toString("utf8");
+    const url = decoded.startsWith("http") ? decoded : `https://${decoded}`;
+    const u = new URL(url);
+    const parts = u.pathname.split("/").filter(Boolean);
+    const i = parts.indexOf("store");
+    return (i >= 0 && parts[i+1]) ? parts[i+1] : null;
+  } catch { return null; }
+})() : null;
+const slug = slugFromHost || String(shop).replace(".myshopify.com","");
 
-    return res.redirect(
-      `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`
-    );
+return res.redirect(
+  `https://admin.shopify.com/store/${slug}/apps/${handle}${host ? `?host=${encodeURIComponent(host)}` : ""}`
+);
+
   } catch (err) {
     console.error("OAuth callback error:", err?.response?.data || err?.message || err);
     return res.status(500).send("OAuth error");
